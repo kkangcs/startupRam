@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>대시보드 · RAM 재고관리</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+</head>
+<body data-page="dashboard">
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">RAM·STOCK</span>
+    </div>
+    <a class="nav-link" data-page="dashboard" href="index.html">대시보드</a>
+    <a class="nav-link" data-page="inventory" href="inventory.html">재고 관리</a>
+    <a class="nav-link" data-page="sales" href="sales.html">판매 기록</a>
+    <a class="nav-link" data-page="clients" href="clients.html">거래처</a>
+    <div class="sidebar-footer">
+      <button class="signout-btn" onclick="signOut()">로그아웃</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">대시보드</h1>
+        <div class="page-sub" id="todayLabel"></div>
+      </div>
+    </div>
+
+    <div class="stat-grid" id="statGrid">
+      <div class="stat-card"><div class="stat-label">전체 재고 수량</div><div class="stat-value" id="statQty">-</div></div>
+      <div class="stat-card"><div class="stat-label">재고 자산가치 (매입가 기준)</div><div class="stat-value accent" id="statValue">-</div></div>
+      <div class="stat-card"><div class="stat-label">이번 달 판매 수량</div><div class="stat-value" id="statMonthQty">-</div></div>
+      <div class="stat-card"><div class="stat-label">이번 달 매출</div><div class="stat-value accent" id="statMonthRevenue">-</div></div>
+      <div class="stat-card"><div class="stat-label">재고 부족 품목</div><div class="stat-value warn" id="statLowStock">-</div></div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <h2 class="section-title">최근 판매 내역</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>날짜</th><th>제품</th><th>거래처</th><th class="text-right">수량</th><th class="text-right">금액</th></tr></thead>
+            <tbody id="recentSalesBody"><tr><td colspan="5" class="empty">불러오는 중...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="section-title">재고 부족 알림</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>제품</th><th class="text-right">재고</th><th class="text-right">최소</th></tr></thead>
+            <tbody id="lowStockBody"><tr><td colspan="3" class="empty">불러오는 중...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h2 class="section-title">회사  --  거래처별 판매량 (전체 누적)</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>거래처</th><th class="text-right">누적 수량</th><th class="text-right">누적 매출</th><th>최근 거래일</th></tr></thead>
+          <tbody id="clientSalesBody"><tr><td colspan="4" class="empty">불러오는 중...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/common.js"></script>
+<script>
+(async function init() {
+  const session = await requireAuth();
+  if (!session) return;
+
+  document.getElementById('todayLabel').textContent =
+    new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+
+  const [{ data: products, error: pErr }, { data: sales, error: sErr }, { data: clients, error: cErr }] = await Promise.all([
+    sb.from('products').select('*'),
+    sb.from('sales').select('*, products(brand,model,capacity_gb,memory_type), clients(name)').order('sale_date', { ascending: false }),
+    sb.from('clients').select('*'),
+  ]);
+
+  if (pErr || sErr || cErr) {
+    showToast('데이터를 불러오지 못했습니다: ' + (pErr || sErr || cErr).message, 'err');
+    return;
+  }
+
+  // ---- 상단 통계 ----
+  const totalQty = products.reduce((s, p) => s + p.quantity, 0);
+  const totalValue = products.reduce((s, p) => s + p.quantity * Number(p.cost_price || 0), 0);
+  const lowStock = products.filter(p => p.quantity <= p.min_stock);
+
+  const now = new Date();
+  const monthSales = sales.filter(s => {
+    const d = new Date(s.sale_date);
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  });
+  const monthQty = monthSales.reduce((s, x) => s + x.quantity, 0);
+  const monthRevenue = monthSales.reduce((s, x) => s + x.quantity * Number(x.unit_price), 0);
+
+  document.getElementById('statQty').textContent = fmtNumber(totalQty) + '개';
+  document.getElementById('statValue').textContent = fmtWon(totalValue);
+  document.getElementById('statMonthQty').textContent = fmtNumber(monthQty) + '개';
+  document.getElementById('statMonthRevenue').textContent = fmtWon(monthRevenue);
+  document.getElementById('statLowStock').textContent = fmtNumber(lowStock.length) + '개';
+
+  // ---- 최근 판매 내역 ----
+  const recentBody = document.getElementById('recentSalesBody');
+  if (sales.length === 0) {
+    recentBody.innerHTML = '<tr><td colspan="5" class="empty">아직 판매 기록이 없습니다.</td></tr>';
+  } else {
+    recentBody.innerHTML = sales.slice(0, 8).map(s => `
+      <tr>
+        <td class="mono">${fmtDate(s.sale_date)}</td>
+        <td>${escapeHtml(productLabel(s.products))}</td>
+        <td>${escapeHtml(s.clients?.name || '-')}</td>
+        <td class="num text-right">${fmtNumber(s.quantity)}</td>
+        <td class="num text-right">${fmtWon(s.quantity * s.unit_price)}</td>
+      </tr>`).join('');
+  }
+
+  // ---- 재고 부족 알림 ----
+  const lowBody = document.getElementById('lowStockBody');
+  if (lowStock.length === 0) {
+    lowBody.innerHTML = '<tr><td colspan="3" class="empty">부족한 재고가 없습니다.</td></tr>';
+  } else {
+    lowBody.innerHTML = lowStock.map(p => `
+      <tr>
+        <td>${escapeHtml(productLabel(p))}</td>
+        <td class="num text-right">${fmtNumber(p.quantity)}</td>
+        <td class="num text-right text-dim">${fmtNumber(p.min_stock)}</td>
+      </tr>`).join('');
+  }
+
+  // ---- 거래처별 누적 판매량 ----
+  const byClient = {};
+  for (const s of sales) {
+    const key = s.client_id;
+    if (!byClient[key]) byClient[key] = { name: s.clients?.name || '-', qty: 0, revenue: 0, lastDate: s.sale_date };
+    byClient[key].qty += s.quantity;
+    byClient[key].revenue += s.quantity * Number(s.unit_price);
+    if (s.sale_date > byClient[key].lastDate) byClient[key].lastDate = s.sale_date;
+  }
+  const clientRows = Object.values(byClient).sort((a, b) => b.qty - a.qty);
+  const clientBody = document.getElementById('clientSalesBody');
+  if (clientRows.length === 0) {
+    clientBody.innerHTML = '<tr><td colspan="4" class="empty">판매 데이터가 없습니다.</td></tr>';
+  } else {
+    clientBody.innerHTML = clientRows.map(c => `
+      <tr>
+        <td>${escapeHtml(c.name)}</td>
+        <td class="num text-right">${fmtNumber(c.qty)}</td>
+        <td class="num text-right">${fmtWon(c.revenue)}</td>
+        <td class="mono text-dim">${fmtDate(c.lastDate)}</td>
+      </tr>`).join('');
+  }
+})();
+</script>
+</body>
+</html>
